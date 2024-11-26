@@ -6,17 +6,6 @@ import:py from torch.nn {Transformer}
 import:py math;
 
 
-can scaled_dot_product(q:pyobj,k:pyobj,v:pyobj,mask:pyobj=None) -> tuple {
-    d_k = q.size()[-1];
-    scaled = torch.matmul(q,k.transpose(-2,-1)) / math.sqrt(d_k);# Transposing last 2 dim -> seq-length, head dim_size
-    if mask is not None{
-        scaled +=mask;
-    }
-    attention = F.softmax(scaled, dim=1);
-    values = torch.matmul(attention, v);
-    return (values,attention);
-}
-
 """
 Node 1: Take 1 copy ( Q/K/V )
 """
@@ -71,18 +60,19 @@ node Node2:nn.Module: {
 
 }
 
+""""""
 node Node3:nn.Module:{
     has attention: pyobj;
-    has v: pyobj;
     has linear_layer: pyobj;
     has d_model: int;
     has out: pyobj;
+    has num_heads: int;
+    has head_dim: float;
 
     can init(attention: pyobj,v:pyobj,x:pyobj,d_model: int,num_heads: int){
         super.init();
         self.linear_layer = nn.Linear(d_model, d_model);
         self.attention = attention;
-        self.v = v;
         (self.batch_size,self.seq_length,self.input_dim) = x.size();
         self.d_model = d_model;
         self.num_heads = num_heads;
@@ -92,12 +82,39 @@ node Node3:nn.Module:{
     }
 
     can transform with MHA_Walker entry {
+
         values = torch.matmul(here.attention,here.v); # Take from V
         values = values.permute(0,2,1,3).reshape(self.batch_size, self.seq_length, self.num_heads * self.head_dim);
         self.out = self.linear_layer(values);
     }
 
 }
+
+can connect_mha(x:pyobj,d_model: int,num_heads: int){
+
+
+    (batch_size,seq_length,input_dim) = x.size();
+    mask = None;
+    attention = None;
+    v = None;
+    # Nodes to be initialized
+    node1_1 = Node1(x,d_model,num_heads); # Query
+    node1_2 = Node1(x,d_model,num_heads); # Key
+    node1_3 = Node1(x,d_model,num_heads); # Value
+    node2 = Node2(mask); # Get attention
+    node3 = Node3(attention,v,x,d_model,num_heads); # Scaled Dot Product and project back
+
+    # Connections made
+    root++>node1_1;
+    root++>node1_2;
+    root++>node1_3;
+    node1_1++>node2;
+    node1_2++>node2;
+    node1_3++>node2;
+    node2++>node3;
+
+}
+
 
 walker MHA_Walker:nn.Module: {
 
@@ -123,6 +140,7 @@ walker MHA_Walker:nn.Module: {
         self.q = None;
         self.k = None;
         self.v = None;
+        connect_mha(x,d_model,num_heads);
     }
 
     can traverse with `root entry {
@@ -160,30 +178,6 @@ walker MHA_Walker:nn.Module: {
 }
 
 
-can connect_mha(x:pyobj,d_model: int,num_heads: int){
-
-
-    (batch_size,seq_length,input_dim) = x.size();
-    mask = None;
-    attention = None;
-    v = None;
-    # Nodes to be initialized
-    node1_1 = Node1(x,d_model,num_heads); # Query
-    node1_2 = Node1(x,d_model,num_heads); # Key
-    node1_3 = Node1(x,d_model,num_heads); # Value
-    node2 = Node2(mask); # Get attention
-    node3 = Node3(attention,v,x,d_model,num_heads); # Scaled Dot Product and project back
-
-    # Connections made
-    root++>node1_1;
-    root++>node1_2;
-    root++>node1_3;
-    node1_1++>node2;
-    node1_2++>node2;
-    node1_3++>node2;
-    node2++>node3;
-
-}
 
 
 
@@ -200,10 +194,7 @@ with entry {
     input_dim = 512;
     d_model = 512;
     num_heads = 8;
-
     x = torch.rand((batch_size,seq_length,input_dim));
-
-    connect_mha(x,d_model,num_heads);
     root spawn MHA_Walker(x,d_model,num_heads);
 
 }
