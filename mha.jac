@@ -7,7 +7,9 @@ import:py math;
 
 
 """
-Node 1: Take 1 copy ( Q/K/V )
+Node 1:
+1. Linear transformation of input to produce Q, K, or V.
+2. Reshaping and permuting the tensor for multi-head attention.
 """
 node Node1:nn.Module: {
 
@@ -32,12 +34,18 @@ node Node1:nn.Module: {
 
     can transform with entry{
         self.t = self.t.reshape(self.batch_size,self.seq_length,self.num_heads, self.head_dim);
+        print(f"q/k/v size: {self.t.size()}");
         self.t = self.t.permute(0,2,1,3);
+        print(f"q/k/v size post permute: {self.t.size()}");
     }
 
 }
 
-
+"""
+1. Compute scaled dot-product between Q and K.
+2. Apply the optional attention mask.
+3. Generate attention scores using softmax.
+"""
 node Node2:nn.Module: {
     has mask: pyobj;
     has attention: pyobj;
@@ -60,8 +68,13 @@ node Node2:nn.Module: {
 
 }
 
-""""""
+"""
+1. Perform matrix multiplication of attention scores and V.
+2. Reshape and permute the resulting tensor back to its original shape.
+3. Apply the final linear transformation.
+"""
 node Node3:nn.Module:{
+
     has attention: pyobj;
     has linear_layer: pyobj;
     has d_model: int;
@@ -85,7 +98,9 @@ node Node3:nn.Module:{
 
         values = torch.matmul(here.attention,here.v); # Take from V
         values = values.permute(0,2,1,3).reshape(self.batch_size, self.seq_length, self.num_heads * self.head_dim);
+        print(f"values.size(): {values.size()}");
         self.out = self.linear_layer(values);
+        print(f"out.size(): {self.out.size()}");
     }
 
 }
@@ -98,19 +113,19 @@ can connect_mha(x:pyobj,d_model: int,num_heads: int){
     attention = None;
     v = None;
     # Nodes to be initialized
-    node1_1 = Node1(x,d_model,num_heads); # Query
-    node1_2 = Node1(x,d_model,num_heads); # Key
-    node1_3 = Node1(x,d_model,num_heads); # Value
+    query = Node1(x,d_model,num_heads); # Query
+    key = Node1(x,d_model,num_heads); # Key
+    value = Node1(x,d_model,num_heads); # Value
     node2 = Node2(mask); # Get attention
     node3 = Node3(attention,v,x,d_model,num_heads); # Scaled Dot Product and project back
 
     # Connections made
-    root++>node1_1;
-    root++>node1_2;
-    root++>node1_3;
-    node1_1++>node2;
-    node1_2++>node2;
-    node1_3++>node2;
+    root++>query;
+    root++>key;
+    root++>value;
+    query++>node2;
+    key++>node2;
+    value++>node2; # This is not that intutive , But we make this connection as we want to pass Value to Node
     node2++>node3;
 
 }
@@ -118,12 +133,6 @@ can connect_mha(x:pyobj,d_model: int,num_heads: int){
 
 walker MHA_Walker:nn.Module: {
 
-    has x:pyobj;
-    has batch_size: int;
-    has seq_length: int;
-    has input_dim: int;
-    has d_model: int;
-    has num_heads: int;
     has qkv_list: list;
     has q: pyobj;
     has k: pyobj;
@@ -132,14 +141,11 @@ walker MHA_Walker:nn.Module: {
 
     can init(x:pyobj,d_model: int,num_heads: int) {
         super.init();
-        self.x = x;
-        (self.batch_size,self.seq_length,self.input_dim) = x.size();
-        self.d_model = d_model;
-        self.num_heads = num_heads;
         self.qkv_list = [];
         self.q = None;
         self.k = None;
         self.v = None;
+        print(f"x.size(): {x.size()}");
         connect_mha(x,d_model,num_heads);
     }
 
@@ -148,7 +154,7 @@ walker MHA_Walker:nn.Module: {
     }
 
     can call_node1 with Node1 exit {
-        print("Visiting Node in Node 1: ", here);
+        print("Visiting Node in Node 1: ");
         self.qkv_list.append(here.t);
         print(len(self.qkv_list));
         if(len(self.qkv_list) == 3)
@@ -162,7 +168,7 @@ walker MHA_Walker:nn.Module: {
     }
 
     can call_node2 with Node2 exit {
-        print("Visiting Node in Node 2:", here);
+        print("Visiting Node in Node 2:");
         self.attention = here.attention;
         print("Attention after Node2",self.attention);
         visit[-->];
@@ -178,22 +184,19 @@ walker MHA_Walker:nn.Module: {
 }
 
 
-
-
-
-
 with entry {
-    #*input_dim = 1024;
+    input_dim = 1024;
     d_model = 512;
     num_heads = 8;
     batch_size = 30;
-    seq_length = 5;*#
+    seq_length = 5;
 
-    seq_length = 4;
+    #*eq_length = 4;
     batch_size = 1;
     input_dim = 512;
     d_model = 512;
-    num_heads = 8;
+    num_heads = 8;*#
+
     x = torch.rand((batch_size,seq_length,input_dim));
     root spawn MHA_Walker(x,d_model,num_heads);
 
